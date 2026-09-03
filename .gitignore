@@ -2,6 +2,9 @@
 __pycache__/
 *.pyc
 
+# Rastro de la actualización automática (tarea programada); no se versiona.
+actualizar.log
+
 # La carpeta de datos no se versiona, EXCEPTO una foto para el demo en la nube
 # (Streamlit Cloud no corre el ETL; necesita los parquet ya listos en el repo).
 data/*
