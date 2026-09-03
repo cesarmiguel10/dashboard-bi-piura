@@ -5,8 +5,6 @@ Antes de la primera ejecución hay que correr el ETL (ver README).
 """
 from __future__ import annotations
 
-import subprocess
-import sys
 from pathlib import Path
 
 import folium
@@ -57,16 +55,6 @@ def zona_piura():
 
 def ultima_actualizacion() -> str | None:
     return SELLO.read_text(encoding="utf-8").strip() if SELLO.exists() else None
-
-
-def actualizar_datos() -> tuple[bool, str]:
-    """Corre actualizar.py (los 3 ETL) y devuelve (ok, salida)."""
-    try:
-        r = subprocess.run([sys.executable, "actualizar.py"], cwd=str(RAIZ),
-                           capture_output=True, text=True, timeout=3600)
-        return r.returncode == 0, (r.stdout or "") + (r.stderr or "")
-    except Exception as e:  # noqa: BLE001
-        return False, repr(e)
 
 
 def nivel_fuerza(r: float) -> str:
@@ -275,9 +263,8 @@ def main() -> None:
                "Datos: caudales del SNIRH (ANA) y clima de NASA POWER.")
 
     if est.empty:
-        st.warning("No hay datos aún. Ejecuta `python actualizar.py` "
-                   "(o usa el botón «🔄 Actualizar ahora» de la izquierda) "
-                   "para bajar los datos de Piura.")
+        st.warning("No hay datos publicados todavía. Falta subir los archivos "
+                   "de datos de Piura al repositorio.")
         return
 
     bienvenida()
@@ -291,19 +278,6 @@ def main() -> None:
         sello = ultima_actualizacion()
         st.caption(f"📅 Datos actualizados: **{sello}**" if sello
                    else "📅 Aún no se registra la fecha de actualización.")
-        if st.button("🔄 Actualizar ahora", width="stretch",
-                     help="Vuelve a bajar los caudales del SNIRH y el clima de "
-                          "NASA POWER de Piura. Tarda un par de minutos."):
-            with st.spinner("Actualizando datos de Piura… (uno o dos minutos)"):
-                ok, salida = actualizar_datos()
-            if ok:
-                st.cache_data.clear()
-                st.success("¡Datos actualizados!")
-                st.rerun()
-            else:
-                st.error("No se pudo actualizar. Detalle abajo.")
-                st.code(salida[-1500:] or "sin salida")
-        st.caption("Se actualiza sola cada día con la tarea programada de Windows.")
 
         st.header("Filtros")
         zona_sel = "Todas"
