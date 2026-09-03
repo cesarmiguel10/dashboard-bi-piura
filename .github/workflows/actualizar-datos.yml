@@ -1,0 +1,49 @@
+name: Actualizar datos (nube)
+
+# Hace de "tarea programada", pero en los servidores de GitHub: corre el ETL y
+# sube los datos nuevos. Al hacer push, Streamlit Cloud redespliega solo, así el
+# tablero se pone al día sin depender de ninguna PC.
+
+on:
+  schedule:
+    - cron: "0 11 * * *"   # diario ~06:00 en Perú (UTC-5)
+  workflow_dispatch: {}     # botón "Run workflow" para correr a mano
+
+permissions:
+  contents: write           # el robot necesita poder subir los datos nuevos
+
+concurrency:
+  group: actualizar-datos
+  cancel-in-progress: false
+
+jobs:
+  actualizar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@v4
+
+      - name: Preparar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Actualizar datos (SNIRH + NASA POWER)
+        run: python actualizar.py
+
+      - name: Publicar los datos nuevos
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/
+          if git diff --cached --quiet; then
+            echo "Sin cambios en los datos: nada que publicar."
+          else
+            git commit -m "Actualización automática de datos de Piura"
+            git push
+          fi
