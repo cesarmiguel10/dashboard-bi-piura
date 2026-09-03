@@ -27,7 +27,7 @@ SELLO = RAIZ / "data" / "ultima_actualizacion.txt"
 
 COLOR_ESTADO = {"Funcionando": "green", "Paralizada": "orange",
                 "Cerrada": "gray", "Desconocido": "lightgray"}
-COLOR_VAR = {"t2m": "#E4572E", "prectotcorr": "#3A86FF", "ws2m": "#8338EC"}
+COLOR_VAR = {"t2m": "#E4572E", "prectotcorr": "#00A878", "ws2m": "#8338EC"}
 
 # Nombre sencillo de cada variable (para frases en lenguaje simple).
 NOMBRE_SIMPLE = {"t2m": "la temperatura", "prectotcorr": "la lluvia",
