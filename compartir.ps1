@@ -1,6 +1,6 @@
-# Comparte el tablero por un link publico de Cloudflare (demo).
-# Deja esta ventana ABIERTA mientras tu amigo lo revisa; con Ctrl+C se cierra
-# el link. Cada vez que lo corres, la direccion puede cambiar (tunel gratis).
+# Publica el tablero en https://piura.suarbee.com (tu dominio en Cloudflare).
+# El link es FIJO: no cambia entre corridas (es un tunel con nombre).
+# Deja esta ventana ABIERTA mientras quieras que el link viva; Ctrl+C lo baja.
 #
 # Uso:
 #   powershell -ExecutionPolicy Bypass -File "D:\DASHBOAR BI\compartir.ps1"
@@ -19,9 +19,9 @@ if (-not $enUso) {
     Write-Host "El tablero ya esta corriendo en el 8501." -ForegroundColor Green
 }
 
-# 2) Abre el tunel de Cloudflare y muestra el link (en el recuadro de abajo).
+# 2) Publica por el tunel con nombre de Cloudflare.
 Write-Host ""
-Write-Host "Abriendo el link de Cloudflare. Comparte la direccion trycloudflare.com que aparece abajo." -ForegroundColor Cyan
-Write-Host "Deja esta ventana abierta mientras tu amigo lo revisa (Ctrl+C para cerrar)." -ForegroundColor Yellow
+Write-Host "Publicando en:  https://piura.suarbee.com" -ForegroundColor Cyan
+Write-Host "Deja esta ventana abierta mientras quieras que el link viva (Ctrl+C para bajarlo)." -ForegroundColor Yellow
 Write-Host ""
-cloudflared tunnel --url http://localhost:8501 --no-autoupdate
+cloudflared tunnel run piura-dashboard
