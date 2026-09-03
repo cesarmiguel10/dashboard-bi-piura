@@ -1,5 +1,12 @@
 .venv/
 __pycache__/
 *.pyc
-data/
+
+# La carpeta de datos no se versiona, EXCEPTO una foto para el demo en la nube
+# (Streamlit Cloud no corre el ETL; necesita los parquet ya listos en el repo).
+data/*
+!data/*.parquet
+!data/*.geojson
+!data/ultima_actualizacion.txt
+
 .streamlit/secrets.toml
