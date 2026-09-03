@@ -4,9 +4,20 @@
 # Asi, cada vez que la PC este encendida un rato, el tablero en la nube se
 # actualiza solo. (SNIRH bloquea la nube: la descarga tiene que salir de Peru.)
 #
-# Como usarlo (PowerShell normal; si dice "Acceso denegado", abrela como
-# administrador):
+# Como usarlo: correlo desde una terminal NORMAL; el script se auto-eleva y
+# Windows te pedira confirmacion (UAC). Solo dale "Si".
 #   powershell -ExecutionPolicy Bypass -File "D:\DASHBOAR BI\registrar_tarea.ps1"
+
+# --- Auto-elevacion: crear la tarea requiere permisos de administrador ---
+$id      = [Security.Principal.WindowsIdentity]::GetCurrent()
+$esAdmin = (New-Object Security.Principal.WindowsPrincipal($id)).IsInRole(
+             [Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $esAdmin) {
+    Write-Host "Pidiendo permisos de administrador (acepta el aviso de Windows)..." -ForegroundColor Yellow
+    Start-Process powershell -Verb RunAs -ArgumentList @(
+        "-NoExit", "-ExecutionPolicy", "Bypass", "-File", "`"$PSCommandPath`"")
+    exit
+}
 
 $raiz    = "D:\DASHBOAR BI"
 $wrapper = "D:\DASHBOAR BI\actualizar_y_publicar.bat"
@@ -18,10 +29,15 @@ $t2 = New-ScheduledTaskTrigger -AtLogOn
 $set = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 2)
 $pr  = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 
-Register-ScheduledTask -TaskName $nombre -Action $accion -Trigger $t1, $t2 `
-  -Settings $set -Principal $pr -Force `
-  -Description "Actualiza caudales (SNIRH) y clima (NASA POWER) de Piura y los sube a GitHub; Streamlit Cloud se redepliega solo."
-
-Write-Host ""
-Write-Host "Tarea registrada: '$nombre'." -ForegroundColor Green
-Write-Host "Para probarla ahora mismo:  Start-ScheduledTask -TaskName '$nombre'"
+try {
+    Register-ScheduledTask -TaskName $nombre -Action $accion -Trigger $t1, $t2 `
+      -Settings $set -Principal $pr -Force -ErrorAction Stop `
+      -Description "Actualiza caudales (SNIRH) y clima (NASA POWER) de Piura y los sube a GitHub; Streamlit Cloud se redepliega solo."
+    Write-Host ""
+    Write-Host "OK: tarea registrada '$nombre'." -ForegroundColor Green
+    Write-Host "Para probarla ahora mismo:  Start-ScheduledTask -TaskName '$nombre'"
+} catch {
+    Write-Host ""
+    Write-Host "ERROR: no se pudo registrar la tarea." -ForegroundColor Red
+    Write-Host $_.Exception.Message -ForegroundColor Red
+}
