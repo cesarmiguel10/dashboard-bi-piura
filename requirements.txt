@@ -1,8 +1,9 @@
-streamlit>=1.38
+streamlit>=1.40
 pandas>=2.2
 numpy>=1.26
 plotly>=5.22
 folium>=0.17
+branca>=0.7
 streamlit-folium>=0.22
 scipy>=1.13
 pyarrow>=16

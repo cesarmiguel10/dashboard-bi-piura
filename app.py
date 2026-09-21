@@ -5,8 +5,10 @@ Antes de la primera ejecución hay que correr el ETL (ver README).
 """
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
+import branca.colormap as bcm
 import folium
 import numpy as np
 import pandas as pd
@@ -15,7 +17,7 @@ import streamlit as st
 from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
 
-from lib import analisis, carga, geo
+from lib import analisis, carga, geo, indicadores
 
 st.set_page_config(page_title="Caudales vs. Clima — Piura",
                    page_icon="💧", layout="wide")
@@ -42,6 +44,18 @@ PLOTLY_CFG = {"displayModeBar": False, "locale": "es"}
 @st.cache_data(show_spinner="Cargando datos…")
 def cargar():
     return carga.cargar_todo()
+
+
+@st.cache_data(show_spinner="Calculando indicadores…")
+def calcular_indicadores(hoy: date):
+    """Resumen de indicadores por estación y de red (línea base).
+
+    `hoy` entra como argumento para que el caché se invalide cada día y la
+    actualidad (días desde el último dato) no quede congelada.
+    """
+    datos = cargar()
+    resumen = indicadores.resumen_estaciones(datos, hoy=hoy)
+    return resumen, indicadores.resumen_red(datos, resumen)
 
 
 @st.cache_data(show_spinner=False)
@@ -101,9 +115,9 @@ def _limites(geom: dict) -> tuple[float, float, float, float]:
     return min(xs), min(ys), max(xs), max(ys)
 
 
-def construir_mapa(est: pd.DataFrame, cob: pd.DataFrame, zona: dict | None = None):
+def _mapa_base(zona: dict | None = None):
+    """Mapa con la zona de Piura pintada y encuadrada (base de ambos mapas)."""
     m = folium.Map(location=[-5.2, -80.3], zoom_start=8, tiles="OpenStreetMap")
-    # Pintar la zona de Piura (relleno translúcido, borde marcado).
     if zona is not None:
         folium.GeoJson(
             zona, name="Piura",
@@ -116,6 +130,12 @@ def construir_mapa(est: pd.DataFrame, cob: pd.DataFrame, zona: dict | None = Non
             m.fit_bounds([[y0, x0], [y1, x1]])
         except Exception:
             pass
+    return m
+
+
+def construir_mapa(est: pd.DataFrame, cob: pd.DataFrame, zona: dict | None = None):
+    """Mapa por estado de la estación (verde/naranja/gris)."""
+    m = _mapa_base(zona)
     con_datos = set(cob["codigo"]) if not cob.empty else set()
     cluster = MarkerCluster(name="Estaciones").add_to(m)
     for _, r in est.iterrows():
@@ -132,6 +152,35 @@ def construir_mapa(est: pd.DataFrame, cob: pd.DataFrame, zona: dict | None = Non
             fill=True, fill_opacity=0.9 if tiene else 0.4, weight=2,
             popup=popup, tooltip=f"{r['nombre']} ({r['codigo']})",
         ).add_to(cluster)
+    return m
+
+
+def construir_mapa_indicador(est: pd.DataFrame, valores: dict, caption: str,
+                             vmin: float, vmax: float, invertir: bool = False,
+                             zona: dict | None = None):
+    """Mapa de brechas: colorea cada estación por un indicador continuo."""
+    m = _mapa_base(zona)
+    colores = (["#00A878", "#F0C808", "#E4572E"] if invertir
+               else ["#E4572E", "#F0C808", "#00A878"])
+    escala = bcm.LinearColormap(colores, vmin=vmin, vmax=vmax, caption=caption)
+    for _, r in est.iterrows():
+        if pd.isna(r["lat"]) or pd.isna(r["lon"]):
+            continue
+        val = valores.get(r["codigo"])
+        if val is None or pd.isna(val):
+            borde, relleno, texto = "#9FB0BD", "#CBD6DF", "sin dato"
+        else:
+            borde = relleno = escala(min(max(val, vmin), vmax))
+            texto = f"{val:.0f}"
+        popup = folium.Popup(
+            f"<b>{r['nombre']}</b><br>Código: {r['codigo']}<br>"
+            f"{caption}: {texto}", max_width=250)
+        folium.CircleMarker(
+            location=[r["lat"], r["lon"]], radius=7, color=borde, weight=1.5,
+            fill=True, fill_color=relleno, fill_opacity=0.85, popup=popup,
+            tooltip=f"{r['nombre']} ({r['codigo']}) · {texto}",
+        ).add_to(m)
+    escala.add_to(m)
     return m
 
 
@@ -198,8 +247,12 @@ def bienvenida() -> None:
             "viento) de cada estación desde 1981.")
 
 
-def main() -> None:
-    # Ocultar cromo en inglés de Streamlit + mejorar el aspecto de la interfaz.
+V_EXPLORAR = "🔎 Explorar"
+V_LINEA = "📊 Línea base y diagnóstico"
+
+
+def _css() -> None:
+    """Oculta el cromo en inglés de Streamlit y aplica la hoja de estilos."""
     st.markdown("""
         <style>
         :root { --azul:#1B98E0; --azul-osc:#0B5C8A; --tinta:#12354B;
@@ -252,80 +305,12 @@ def main() -> None:
         </style>
     """, unsafe_allow_html=True)
 
-    datos = cargar()
-    est, caudales, clima, cob = (datos["estaciones"], datos["caudales"],
-                                 datos["clima"], datos["cobertura"])
 
-    st.title("💧 Caudales vs. Clima — Región Piura")
-    st.caption("¿El río crece cuando llueve? ¿Cambia con la temperatura o el "
-               "viento? Aquí lo puedes ver estación por estación, en el "
-               "departamento de Piura. "
-               "Datos: caudales del SNIRH (ANA) y clima de NASA POWER.")
-
-    if est.empty:
-        st.warning("No hay datos publicados todavía. Falta subir los archivos "
-                   "de datos de Piura al repositorio.")
-        return
-
+def vista_explorar(est, caudales, clima, cob, filtro, con_caudal, con_clima,
+                   metodo, escala, max_lag) -> None:
+    """Vista principal: mapa, correlación caudal↔clima y desfase por estación."""
     bienvenida()
 
-    con_caudal = set(cob["codigo"]) if not cob.empty else set()
-    con_clima = set(clima["codigo"]) if not clima.empty else set()
-
-    # --- Barra lateral: filtros y opciones ---------------------------------
-    with st.sidebar:
-        st.header("Datos")
-        sello = ultima_actualizacion()
-        st.caption(f"📅 Datos actualizados: **{sello}**" if sello
-                   else "📅 Aún no se registra la fecha de actualización.")
-
-        st.header("Filtros")
-        zona_sel = "Todas"
-        if "ala" in est.columns and est["ala"].notna().any():
-            zonas = ["Todas"] + sorted(est["ala"].dropna().unique())
-            zona_sel = st.selectbox(
-                "Zona de Piura", zonas,
-                help="Divide Piura en zonas de agua (ALA): por ejemplo Chira, "
-                     "Alto Piura o San Lorenzo. Elige una para ver solo esa parte.")
-        estados = st.multiselect(
-            "Estado de la estación", sorted(est["estado"].unique()),
-            default=sorted(est["estado"].unique()),
-            placeholder="Elige uno o más",
-            help="Funcionando = mide hoy. Paralizada = pausada. "
-                 "Cerrada = ya no mide.")
-        solo_clima = st.checkbox(
-            "Solo las que se pueden comparar", value=True,
-            help="Deja solo estaciones con datos de clima (desde 1981) para "
-                 "poder compararlos con el caudal.")
-        busca = st.text_input(
-            "Buscar estación", placeholder="Nombre o código…",
-            help="Escribe parte del nombre o el código.").strip().lower()
-
-        with st.expander("⚙️ Opciones avanzadas"):
-            metodo = st.radio(
-                "Forma de medir la relación", list(METODOS),
-                format_func=lambda m: METODOS[m],
-                help="Pearson busca una línea recta; Spearman aguanta mejor los "
-                     "valores muy altos o bajos. Si dudas, deja Pearson.")
-            escala = st.radio(
-                "Juntar los datos por", ["Mensual", "Diaria"], horizontal=True,
-                help="Mensual: un promedio por mes (más claro, recomendado). "
-                     "Diaria: día por día (más detalle, pero más ruido).")
-            max_lag = st.slider(
-                "Retraso a revisar (meses)", 0, 12, 6,
-                help="La lluvia tarda en llegar al río. Prueba retrasos de 0 a N "
-                     "meses y te dice cuál relación sale más fuerte.")
-
-    filtro = est[est["estado"].isin(estados)].copy()
-    if zona_sel != "Todas":
-        filtro = filtro[filtro["ala"] == zona_sel]
-    if solo_clima:
-        filtro = filtro[filtro["codigo"].isin(con_clima)]
-    if busca:
-        filtro = filtro[filtro["nombre"].str.lower().str.contains(busca)
-                        | filtro["codigo"].str.contains(busca)]
-
-    # --- KPIs ---------------------------------------------------------------
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Estaciones en Piura", f"{len(est):,}",
               help="Puntos donde se mide un río dentro del departamento de Piura.")
@@ -358,7 +343,8 @@ def main() -> None:
                    "Los puntos grandes tienen datos para comparar.")
         mapa = construir_mapa(filtro, cob, zona_piura())
         estado_mapa = st_folium(mapa, height=460, use_container_width=True,
-                                returned_objects=["last_object_clicked"])
+                                returned_objects=["last_object_clicked"],
+                                key="mapa_explorar")
         clic = estado_mapa.get("last_object_clicked") if estado_mapa else None
         if clic:
             d = filtro.assign(
@@ -482,6 +468,225 @@ def main() -> None:
                      "n": "Datos comparados", "fuerza": "En palabras"})
             [["Variable del clima", "Relación (r)", "Datos comparados",
               "En palabras"]], hide_index=True, width="stretch")
+
+
+def _ficha_metadatos(fila: pd.Series) -> None:
+    """Ficha ampliada de la estación seleccionada (metadatos + indicadores)."""
+    meta = []
+    if pd.notna(fila.get("operador")):
+        meta.append(f"Cód. operador: {int(fila['operador'])}")
+    if pd.notna(fila.get("cuenca")):
+        meta.append(f"Cuenca: {fila['cuenca']}")
+    if pd.notna(fila.get("ala")):
+        meta.append(f"Zona (ALA): {fila['ala']}")
+    if pd.notna(fila.get("rio")):
+        meta.append(f"Río: {fila['rio']}")
+    st.markdown(f"**{fila['nombre']}**  \nCódigo {fila['codigo']} · "
+                f"{fila['tipo']} · {fila['estado']}"
+                + ("  \n" + "  \n".join(meta) if meta else ""))
+    st.caption(f"Datos desde {pd.Timestamp(fila['fecha_min']):%d/%m/%Y} "
+               f"hasta {pd.Timestamp(fila['fecha_max']):%d/%m/%Y}.")
+    m1, m2 = st.columns(2)
+    m1.metric("Completitud", f"{fila['completitud']:.0f}%")
+    m2.metric("Mayor hueco", f"{int(fila['hueco_max_dias']):,} días")
+    m3, m4 = st.columns(2)
+    m3.metric("Cobertura conjunta",
+              "—" if pd.isna(fila["cobertura_conjunta"])
+              else f"{fila['cobertura_conjunta']:.0f}%")
+    m4.metric("Complementación",
+              "—" if pd.isna(fila["complementacion"])
+              else f"{fila['complementacion']:.0f}%")
+
+
+def vista_linea_base(filtro) -> None:
+    """Vista de línea base: indicadores, mapa de brechas y complementación."""
+    resumen, red = calcular_indicadores(date.today())
+    if resumen.empty:
+        st.info("Aún no hay datos suficientes para calcular la línea base.")
+        return
+
+    st.subheader("📊 Línea base de la información")
+    st.caption("Punto de partida de la disponibilidad y la calidad de los datos "
+               "hidroclimáticos de Piura, calculado sobre lo ya descargado.")
+
+    a1, a2, a3, a4 = st.columns(4)
+    a1.metric("Disponibilidad de caudal", f"{red['disp_caudal']:.0f}%",
+              help=f"{red['con_caudal']} de {red['total']} estaciones tienen "
+                   "serie de caudal.")
+    a2.metric("Cobertura meteorológica", f"{red['meteo_ratio']:.0f}%",
+              help=f"{red['con_ambos']} de {red['con_caudal']} estaciones con "
+                   "caudal tienen clima asociable.")
+    a3.metric("Completitud media", f"{red['completitud_media']:.0f}%",
+              help="Promedio de días con dato frente a los esperados, por estación.")
+    a4.metric("Calidad media", f"{red['calidad_media']:.0f}%",
+              help="Registros que pasan el control físico (caudal ≥ 0).")
+    b1, b2, b3, b4 = st.columns(4)
+    b1.metric("Cobertura conjunta media", f"{red['cobertura_conjunta_media']:.0f}%",
+              help="Días con caudal y clima a la vez, dentro del periodo de solape.")
+    b2.metric("Complementación media", f"{red['complementacion_media']:.0f}%",
+              help="Parte de los vacíos de caudal que caen en periodo con clima "
+                   "(desde 1981), contextualizable con NASA POWER.")
+    b3.metric("Mayor hueco típico", f"{red['hueco_mediano']:.0f} días",
+              help="Mediana del tramo más largo sin datos por estación.")
+    b4.metric("Último dato (mediana)",
+              f"{red['actualidad_mediana_dias'] / 30.44:.0f} meses",
+              help="Mediana del tiempo transcurrido desde el último registro.")
+
+    st.divider()
+
+    ind_op = {
+        "Completitud (%)": ("completitud", 0, 100, False),
+        "Cobertura conjunta (%)": ("cobertura_conjunta", 0, 100, False),
+        "Complementación (%)": ("complementacion", 0, 100, False),
+        "Mayor hueco (días)": ("hueco_max_dias", 0, 365, True),
+    }
+    izq, der = st.columns([1.15, 1])
+    with izq:
+        st.subheader("🗺️ Mapa de brechas")
+        etq_ind = st.selectbox(
+            "Colorear el mapa por", list(ind_op),
+            help="Verde = mejor; rojo = peor (o más días de hueco). Gris = "
+                 "sin dato para ese indicador.")
+        col_ind, vmin, vmax, invertir = ind_op[etq_ind]
+        est_map = filtro[filtro["codigo"].isin(resumen["codigo"])]
+        valores = resumen.set_index("codigo")[col_ind].to_dict()
+        st.caption("Cada punto es una estación. Haz clic para ver su detalle.")
+        mapa = construir_mapa_indicador(est_map, valores, etq_ind, vmin, vmax,
+                                        invertir, zona_piura())
+        estado_mapa = st_folium(mapa, height=460, use_container_width=True,
+                                returned_objects=["last_object_clicked"],
+                                key="mapa_brechas")
+        clic = estado_mapa.get("last_object_clicked") if estado_mapa else None
+        if clic and not est_map.empty:
+            d = est_map.assign(dist=(est_map["lat"] - clic["lat"]).abs()
+                               + (est_map["lon"] - clic["lng"]).abs())
+            cod = d.sort_values("dist").iloc[0]
+            if cod["dist"] < 0.02 and cod["codigo"] != st.session_state.get("sel"):
+                st.session_state["sel"] = cod["codigo"]
+                st.rerun()
+
+    with der:
+        st.subheader("📍 Detalle de la estación")
+        codigos = resumen["codigo"].tolist()
+        sel = st.session_state.get("sel")
+        if sel not in codigos:
+            sel = codigos[0]
+        _ficha_metadatos(resumen[resumen["codigo"] == sel].iloc[0])
+
+    st.divider()
+    st.subheader("Indicadores por estación")
+    st.caption("Una fila por estación con caudal. Barras llenas y verdes = mejor.")
+    vista_tabla = resumen[resumen["codigo"].isin(filtro["codigo"])]
+    columnas = ["nombre", "estado", "completitud", "calidad", "hueco_max_dias",
+                "cobertura_conjunta", "complementacion", "dias_desde"]
+    st.dataframe(
+        vista_tabla[columnas], hide_index=True, width="stretch",
+        column_config={
+            "nombre": st.column_config.TextColumn("Estación"),
+            "estado": st.column_config.TextColumn("Estado"),
+            "completitud": st.column_config.ProgressColumn(
+                "Completitud", min_value=0, max_value=100, format="%.0f%%"),
+            "calidad": st.column_config.ProgressColumn(
+                "Calidad", min_value=0, max_value=100, format="%.0f%%"),
+            "hueco_max_dias": st.column_config.NumberColumn(
+                "Mayor hueco (días)", format="%d"),
+            "cobertura_conjunta": st.column_config.ProgressColumn(
+                "Cob. conjunta", min_value=0, max_value=100, format="%.0f%%"),
+            "complementacion": st.column_config.ProgressColumn(
+                "Complementación", min_value=0, max_value=100, format="%.0f%%"),
+            "dias_desde": st.column_config.NumberColumn(
+                "Días sin actualizar", format="%d"),
+        })
+
+
+def main() -> None:
+    _css()
+
+    datos = cargar()
+    est, caudales, clima, cob = (datos["estaciones"], datos["caudales"],
+                                 datos["clima"], datos["cobertura"])
+
+    st.title("💧 Caudales vs. Clima — Región Piura")
+    st.caption("¿El río crece cuando llueve? ¿Cambia con la temperatura o el "
+               "viento? Aquí lo puedes ver estación por estación, en el "
+               "departamento de Piura. "
+               "Datos: caudales del SNIRH (ANA) y clima de NASA POWER.")
+
+    if est.empty:
+        st.warning("No hay datos publicados todavía. Falta subir los archivos "
+                   "de datos de Piura al repositorio.")
+        return
+
+    con_caudal = set(cob["codigo"]) if not cob.empty else set()
+    con_clima = set(clima["codigo"]) if not clima.empty else set()
+
+    # --- Barra lateral: vista, filtros y opciones --------------------------
+    with st.sidebar:
+        st.header("Vista")
+        vista = st.segmented_control(
+            "Vista", [V_EXPLORAR, V_LINEA], default=V_EXPLORAR,
+            key="vista", label_visibility="collapsed")
+
+        st.header("Datos")
+        sello = ultima_actualizacion()
+        st.caption(f"📅 Datos actualizados: **{sello}**" if sello
+                   else "📅 Aún no se registra la fecha de actualización.")
+
+        st.header("Filtros")
+        zona_sel = "Todas"
+        if "ala" in est.columns and est["ala"].notna().any():
+            zonas = ["Todas"] + sorted(est["ala"].dropna().unique())
+            zona_sel = st.selectbox(
+                "Zona de Piura", zonas,
+                help="Divide Piura en zonas de agua (ALA): por ejemplo Chira, "
+                     "Alto Piura o San Lorenzo. Elige una para ver solo esa parte.")
+        estados = st.multiselect(
+            "Estado de la estación", sorted(est["estado"].unique()),
+            default=sorted(est["estado"].unique()),
+            placeholder="Elige uno o más",
+            help="Funcionando = mide hoy. Paralizada = pausada. "
+                 "Cerrada = ya no mide.")
+        solo_clima = st.checkbox(
+            "Solo las que se pueden comparar", value=True,
+            help="Deja solo estaciones con datos de clima (desde 1981) para "
+                 "poder compararlos con el caudal.")
+        busca = st.text_input(
+            "Buscar estación", placeholder="Nombre o código…",
+            help="Escribe parte del nombre o el código.").strip().lower()
+
+        metodo, escala, max_lag = "pearson", "Mensual", 6
+        if vista != V_LINEA:
+            with st.expander("⚙️ Opciones avanzadas"):
+                metodo = st.radio(
+                    "Forma de medir la relación", list(METODOS),
+                    format_func=lambda m: METODOS[m],
+                    help="Pearson busca una línea recta; Spearman aguanta mejor "
+                         "los valores muy altos o bajos. Si dudas, deja Pearson.")
+                escala = st.radio(
+                    "Juntar los datos por", ["Mensual", "Diaria"], horizontal=True,
+                    help="Mensual: un promedio por mes (más claro, recomendado). "
+                         "Diaria: día por día (más detalle, pero más ruido).")
+                max_lag = st.slider(
+                    "Retraso a revisar (meses)", 0, 12, 6,
+                    help="La lluvia tarda en llegar al río. Prueba retrasos de 0 "
+                         "a N meses y te dice cuál relación sale más fuerte.")
+
+    filtro = est[est["estado"].isin(estados)].copy()
+    if zona_sel != "Todas":
+        filtro = filtro[filtro["ala"] == zona_sel]
+    if busca:
+        filtro = filtro[filtro["nombre"].str.lower().str.contains(busca)
+                        | filtro["codigo"].str.contains(busca)]
+
+    if vista == V_LINEA:
+        # El diagnóstico de brechas incluye también las estaciones con caudal
+        # pero sin clima: no aplica el filtro de comparación (solo_clima).
+        vista_linea_base(filtro)
+    else:
+        if solo_clima:
+            filtro = filtro[filtro["codigo"].isin(con_clima)]
+        vista_explorar(est, caudales, clima, cob, filtro, con_caudal,
+                       con_clima, metodo, escala, max_lag)
 
 
 if __name__ == "__main__":
